@@ -1,1 +1,12 @@
-python3 -u decode_seq2seq.py --model_type unilm --model_name_or_path /data/unilm/yunwen_unilm/ --model_recover_path /data/unilm/output_dir/model.bin --max_seq_length 512 --input_file /data/unilm/data_file/test.json --output_file /data/unilm/data_file/predict_.json --do_lower_case --batch_size 32 --beam_szie 5 --max_tgt_length 128
+python3 -u run_decode.py \
+    --model_type unilm \
+    --model_name_or_path unilm_base/ \
+    --model_recover_path output/model.3.bin \
+    --input_file data/test_data.json \
+    --output_file data/test_predict.json \
+    --max_seq_length 512 \
+    --do_lower_case \
+    --batch_size 32 \
+    --beam_size 5 \
+    --max_tgt_length 128
+    

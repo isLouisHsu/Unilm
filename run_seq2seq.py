@@ -15,11 +15,15 @@ from torch.utils.data import RandomSampler
 from torch.utils.data.distributed import DistributedSampler
 import torch.distributed as dist
 
-from tokenization_unilm import UnilmTokenizer, WhitespaceTokenizer
-from modeling_unilm import UnilmForSeq2Seq, UnilmConfig
+from unilm import (
+    UnilmTokenizer, 
+    WhitespaceTokenizer,
+    UnilmForSeq2Seq, 
+    UnilmConfig,
+)
 from transformers import AdamW, get_linear_schedule_with_warmup
 
-import utils_seq2seq
+import data_utils
 
 ALL_MODELS = sum((tuple(conf.pretrained_config_archive_map.keys())
                   for conf in (UnilmConfig,)), ())
@@ -200,7 +204,9 @@ def main():
     args.model_type = args.model_type.lower()
     config_class, model_class, tokenizer_class = MODEL_CLASSES[args.model_type]
     config = config_class.from_pretrained(
-        args.config_name if args.config_name else args.model_name_or_path, max_position_embeddings=args.max_position_embeddings, label_smoothing=args.label_smoothing)
+        args.config_name if args.config_name else args.model_name_or_path, 
+        max_position_embeddings=args.max_position_embeddings, 
+        label_smoothing=args.label_smoothing)
     tokenizer = tokenizer_class.from_pretrained(
         args.tokenizer_name if args.tokenizer_name else args.model_name_or_path, do_lower_case=args.do_lower_case)
     data_tokenizer = WhitespaceTokenizer() if args.tokenized_input else tokenizer
@@ -209,11 +215,11 @@ def main():
 
     if args.do_train:
         print("Loading Train Dataset", args.data_dir)
-        bi_uni_pipeline = [utils_seq2seq.Preprocess4Seq2seq(args.max_pred, args.mask_prob, list(tokenizer.vocab.keys()), tokenizer.convert_tokens_to_ids, args.max_seq_length, mask_source_words=False, skipgram_prb=args.skipgram_prb, skipgram_size=args.skipgram_size, mask_whole_word=args.mask_whole_word, tokenizer=data_tokenizer)]
+        bi_uni_pipeline = [data_utils.Preprocess4Seq2seq(args.max_pred, args.mask_prob, list(tokenizer.vocab.keys()), tokenizer.convert_tokens_to_ids, args.max_seq_length, mask_source_words=False, skipgram_prb=args.skipgram_prb, skipgram_size=args.skipgram_size, mask_whole_word=args.mask_whole_word, tokenizer=data_tokenizer)]
 
         file = os.path.join(
             args.data_dir, args.src_file if args.src_file else 'train.tgt')
-        train_dataset = utils_seq2seq.Seq2SeqDataset(
+        train_dataset = data_utils.Seq2SeqDataset(
             file, args.train_batch_size, data_tokenizer, args.max_seq_length, bi_uni_pipeline=bi_uni_pipeline)
         if args.local_rank == -1:
             train_sampler = RandomSampler(train_dataset, replacement=False)
@@ -222,7 +228,7 @@ def main():
             train_sampler = DistributedSampler(train_dataset)
             _batch_size = args.train_batch_size // dist.get_world_size()
         train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=_batch_size, sampler=train_sampler,
-                                                       num_workers=args.num_workers, collate_fn=utils_seq2seq.batch_list_to_batch_tensors, pin_memory=False)
+                                                       num_workers=args.num_workers, collate_fn=data_utils.batch_list_to_batch_tensors, pin_memory=False)
 
     # note: args.train_batch_size has been changed to (/= args.gradient_accumulation_steps)
     # t_total = int(math.ceil(len(train_dataset.ex_list) / args.train_batch_size)

@@ -5,7 +5,7 @@
 """
 
 from convert_unilm_pytorch_checkpoint_to_original_tf import convert_pytorch_checkpoint_to_tf
-from modeling_unilm import UnilmForLM
+from unilm import UnilmForLM
 import os
 
 os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'

@@ -10,7 +10,7 @@ import numpy as np
 import tensorflow as tf
 import torch
 
-from modeling_unilm import UnilmForLM
+from unilm import UnilmForLM
 
 
 def convert_pytorch_checkpoint_to_tf(model: UnilmForLM, ckpt_dir: str, model_name: str):
