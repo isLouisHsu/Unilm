@@ -446,13 +446,17 @@ class UnilmForSeq2Seq(UnilmPreTrainedModel):
 
 class UnilmForSeq2SeqDecode(UnilmPreTrainedModel):
     def __init__(self, config, mask_word_id=0,
-                 search_beam_size=1, length_penalty=1.0, eos_id=0, sos_id=0,
-                 forbid_duplicate_ngrams=False, forbid_ignore_set=None, ngram_size=3, min_len=0):
+                search_beam_size=1, search_random_k=1, 
+                 length_penalty=1.0, eos_id=0, sos_id=0,
+                 forbid_duplicate_ngrams=False, 
+                 forbid_ignore_set=None, 
+                 ngram_size=3, min_len=0):
         super(UnilmForSeq2SeqDecode, self).__init__(config)
         self.bert = UnilmModelIncr(config)
         self.cls = BertOnlyMLMHead(config)
         self.crit_mask_lm = nn.CrossEntropyLoss(reduction='none')
         self.mask_word_id = mask_word_id
+        self.search_random_k = search_random_k
         self.search_beam_size = search_beam_size
         self.length_penalty = length_penalty
         self.eos_id = eos_id
@@ -490,6 +494,7 @@ class UnilmForSeq2SeqDecode(UnilmPreTrainedModel):
         curr_ids = input_ids                                                # (batch_size, input_length)
         mask_ids = input_ids.new(batch_size, 1).fill_(self.mask_word_id)    # (batch_size, 1)
         next_pos = input_length
+        forbid_word_mask = None
 
         while next_pos < total_length:
             curr_length = list(curr_ids.size())[1]                  # 第一次循环是input_length，之后是1
@@ -512,9 +517,20 @@ class UnilmForSeq2SeqDecode(UnilmPreTrainedModel):
 
             last_hidden = new_encoded_layers[-1][:, -1:, :]         # (batch_size, 1, hidden_size)
             prediction_scores = self.cls(last_hidden)               # (batch_size, 1, vocab_size)
+            # 求对数概率
+            log_scores = torch.nn.functional.log_softmax(
+                prediction_scores, dim=-1)                          # (batch_size, 1, vocab_size)
+            if forbid_word_mask is not None:
+                log_scores += (forbid_word_mask * -10000.0)
+            if self.min_len and (next_pos-input_length+1 <= self.min_len):
+                log_scores[:, :, self.eos_id].fill_(-10000.0)       # 若未达到最小长度，强制不输出eos
 
             # greedy search
-            _, max_ids = torch.max(prediction_scores, dim=-1)
+            # _, max_ids = torch.max(log_scores, dim=-1)
+            _, max_ids_topk = torch.topk(log_scores, self.search_random_k)  # (batch_size, 1, search_random_k)
+            rand_idx = torch.randint(low=0, high=self.search_random_k, 
+                size=(batch_size, 1, 1), device=max_ids_topk.device)
+            max_ids = max_ids_topk.gather(-1, rand_idx).squeeze(1)
             output_ids.append(max_ids)
 
             if prev_embedding is None:
@@ -582,31 +598,35 @@ class UnilmForSeq2SeqDecode(UnilmPreTrainedModel):
 
             last_hidden = new_encoded_layers[-1][:, -1:, :]
             prediction_scores = self.cls(last_hidden)
-
-            # beam search
-            import pdb; pdb.set_trace()
+            # 求对数概率
             log_scores = torch.nn.functional.log_softmax(
-                prediction_scores, dim=-1)
+                prediction_scores, dim=-1)                              # (batch_size, 1, vocab_size)
             if forbid_word_mask is not None:
                 log_scores += (forbid_word_mask * -10000.0)
-            if self.min_len and (next_pos-input_length+1 <= self.min_len):
+            if self.min_len is not None and \
+                    (next_pos - input_length + 1 <= self.min_len):      # 若未达到最小长度，强制不输出eos
                 log_scores[:, :, self.eos_id].fill_(-10000.0)
-            kk_scores, kk_ids = torch.topk(log_scores, k=K)
+
+            # beam search
+            kk_scores, kk_ids = torch.topk(log_scores, k=K)             # (batch_size, 1, search_beam_size)
             if len(total_scores) == 0:
-                k_ids = torch.reshape(kk_ids, [batch_size, K])
-                back_ptrs = torch.zeros(batch_size, K, dtype=torch.long)
-                k_scores = torch.reshape(kk_scores, [batch_size, K])
+                k_ids = torch.reshape(kk_ids, [batch_size, K])          # (batch_size, search_beam_size)
+                back_ptrs = torch.zeros(batch_size, K, dtype=torch.long)# (batch_size, search_beam_size)
+                k_scores = torch.reshape(kk_scores, [batch_size, K])    # (batch_size, search_beam_size)
             else:
+                ## 若上一步已输出eos，该序列不再进行搜索
                 last_eos = torch.reshape(
-                    beam_masks[-1], [batch_size * K, 1, 1])
+                    beam_masks[-1], [batch_size * K, 1, 1])             # (batch_size *search_beam_size, 1, 1)
                 last_seq_scores = torch.reshape(
-                    total_scores[-1], [batch_size * K, 1, 1])
-                kk_scores += last_eos * (-10000.0) + last_seq_scores
-                kk_scores = torch.reshape(kk_scores, [batch_size, K * K])
-                k_scores, k_ids = torch.topk(kk_scores, k=K)
-                back_ptrs = torch.div(k_ids, K)
-                kk_ids = torch.reshape(kk_ids, [batch_size, K * K])
-                k_ids = torch.gather(kk_ids, 1, k_ids)
+                    total_scores[-1], [batch_size * K, 1, 1])           # (batch_size *search_beam_size, 1, 1)
+                kk_scores += last_eos * (-10000.0) + last_seq_scores    # (batch_size, 1, search_beam_size) + (batch_size *search_beam_size, 1, 1)
+                                                                        #   -> (batch_size *search_beam_size, 1, search_beam_size)
+                kk_scores = torch.reshape(
+                    kk_scores, [batch_size, K * K])                     # (batch_size, search_beam_size * search_beam_size)
+                k_scores, k_ids = torch.topk(kk_scores, k=K)            # (batch_size, search_beam_size)
+                back_ptrs = torch.div(k_ids, K).to(k_ids.dtype)         # (batch_size, search_beam_size)
+                kk_ids = torch.reshape(kk_ids, [batch_size, K * K])     # (batch_size, search_beam_size * search_beam_size)
+                k_ids = torch.gather(kk_ids, 1, k_ids)                  # (batch_size, search_beam_size)
             step_back_ptrs.append(back_ptrs)
             step_ids.append(k_ids)
             beam_masks.append(torch.eq(k_ids, self.eos_id).float())
@@ -638,31 +658,28 @@ class UnilmForSeq2SeqDecode(UnilmPreTrainedModel):
                 return y
 
             is_first = (prev_embedding is None)
-
-            if prev_embedding is None:
+            if is_first:
                 prev_embedding = first_expand(new_embedding[:, :-1, :])
-            else:
-                prev_embedding = torch.cat(
-                    (prev_embedding, new_embedding[:, :-1, :]), dim=1)
-                prev_embedding = select_beam_items(
-                    prev_embedding, back_ptrs)
-            if prev_encoded_layers is None:
                 prev_encoded_layers = [first_expand(
                     x[:, :-1, :]) for x in new_encoded_layers]
             else:
+                prev_embedding = torch.cat(
+                    (prev_embedding, new_embedding[:, :-1, :]), dim=1)
+                prev_embedding = select_beam_items(prev_embedding, back_ptrs)
                 prev_encoded_layers = [torch.cat((x[0], x[1][:, :-1, :]), dim=1)
                                        for x in zip(prev_encoded_layers, new_encoded_layers)]
-                prev_encoded_layers = [select_beam_items(
-                    x, back_ptrs) for x in prev_encoded_layers]
+                prev_encoded_layers = [select_beam_items(x, back_ptrs) 
+                                       for x in prev_encoded_layers]
 
             curr_ids = torch.reshape(k_ids, [batch_size * K, 1])
 
             if is_first:
-                token_type_ids = first_expand(token_type_ids)
-                position_ids = first_expand(position_ids)
-                attention_mask = first_expand(attention_mask)
-                mask_ids = first_expand(mask_ids)
+                token_type_ids = first_expand(token_type_ids)   # (batch_size * search_beam_size, total_length)
+                position_ids = first_expand(position_ids)       # (batch_size * search_beam_size, total_length)
+                attention_mask = first_expand(attention_mask)   # (batch_size * search_beam_size, total_length, total_length)
+                mask_ids = first_expand(mask_ids)               # (batch_size * search_beam_size, 1)
 
+            # 防止产生重复ngram
             if self.forbid_duplicate_ngrams:
                 wids = step_ids[-1].tolist()
                 ptrs = step_back_ptrs[-1].tolist()
@@ -723,33 +740,36 @@ class UnilmForSeq2SeqDecode(UnilmPreTrainedModel):
         step_back_ptrs = [x.tolist() for x in step_back_ptrs]
         traces = {'pred_seq': [], 'scores': [], 'wids': [], 'ptrs': []}
 
-        import pdb; pdb.set_trace()
+        # 每个样本寻找最高样本的序列
         for b in range(batch_size):
-            scores = [x[b] for x in total_scores]
-            wids_list = [x[b] for x in step_ids]
-            ptrs = [x[b] for x in step_back_ptrs]
+            scores = [x[b] for x in total_scores]   # List[tensor(output_length)]
+            wids_list = [x[b] for x in step_ids]    # List[tensor(output_length, search_beam_size)]
+            ptrs = [x[b] for x in step_back_ptrs]   # List[tensor(output_length, search_beam_size)]
             traces['scores'].append(scores)
             traces['wids'].append(wids_list)
             traces['ptrs'].append(ptrs)
+            ## 寻找多个序列最后eos的位置
             last_frame_id = len(scores) - 1
             for i, wids in enumerate(wids_list):
                 if all(wid == self.eos_id for wid in wids):
                     last_frame_id = i
                     break
-            max_score = -math.inf
-            frame_id = -1
-            pos_in_frame = -1
+            ## 寻找最高评分的序列
+            max_score = -math.inf   # 最高评分序列的分数
+            frame_id = -1           # 最高评分序列的序号
+            pos_in_frame = -1       # 最高评分序列中eos的位置
             for fid in range(last_frame_id + 1):
                 for i, wid in enumerate(wids_list[fid]):
                     if wid == self.eos_id or fid == last_frame_id:
                         s = scores[fid][i]
+                        ### 长度惩罚项：
                         if self.length_penalty > 0:
-                            s /= math.pow((5 + fid + 1) / 6.0,
-                                          self.length_penalty)
+                            s /= math.pow((5 + fid + 1) / 6.0, self.length_penalty)
                         if s > max_score:
                             max_score = s
                             frame_id = fid
                             pos_in_frame = i
+            ## 保存最高评分的序列
             if frame_id == -1:
                 traces['pred_seq'].append([0])
             else:
@@ -769,7 +789,6 @@ class UnilmForSeq2SeqDecode(UnilmPreTrainedModel):
                 out_tensor[i, :length, ...] = tensor
             return out_tensor
 
-        import pdb; pdb.set_trace()
         for k in ('pred_seq', 'scores', 'wids', 'ptrs'):
             ts_list = traces[k]
             if not isinstance(ts_list[0], torch.Tensor):
@@ -778,5 +797,4 @@ class UnilmForSeq2SeqDecode(UnilmPreTrainedModel):
             traces[k] = _pad_sequence(
                 ts_list, total_length, padding_value=0).to(input_ids.device)
 
-        import pdb; pdb.set_trace()
-        return traces
+        return traces   # Dict{str: tensor(batch_size, total_length[, search_beam_size])}

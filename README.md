@@ -33,13 +33,36 @@ UniLM模型既可以应用于自然语言理解（NLU）任务，又可以应用
 
 如何使用该模型进行NLG任务？
 * fine-tuning
-~~~
-nohup python3 -u run_seq2seq.py --data_dir /data/ --src_file train_data.json --model_type unilm --model_name_or_path /data/unilm/yunwen_unilm/ --output_dir /data/unilm/output_dir/ --max_seq_length 512 --max_position_embeddings 512 --do_train --do_lower_case --train_batch_size 32 --learning_rate 1e-5 --num_train_epochs 3 > log.log 2>&1 &
-~~~
+``` py
+python3 run_seq2seq.py \
+    --model_type unilm \
+    --model_name_or_path unilm_base/ \
+    --data_dir data/ \
+    --src_file train_data.json \
+    --output_dir output/ \
+    --max_seq_length 512 \
+    --max_position_embeddings 512 \
+    --do_train \
+    --do_lower_case \
+    --train_batch_size 16 \
+    --learning_rate 1e-5 \
+    --num_train_epochs 3
+```
 * test
-~~~
-python3 -u run_decode.py --model_type unilm --model_name_or_path /data/unilm/yunwen_unilm/ --model_recover_path /data/unilm/output_dir/model.bin --max_seq_length 512 --input_file data/test.json --output_file data/predict_.json --do_lower_case --batch_size 32 --beam_szie 5 --max_tgt_length 128
-~~~
+``` py
+python3 run_decode.py \
+    --model_type unilm \
+    --model_name_or_path unilm_base/ \
+    --model_recover_path output/model.3.bin \
+    --input_file data/test_data.json \
+    --output_file data/test_predict.json \
+    --max_seq_length 512 \
+    --do_lower_case \
+    --batch_size 16 \
+    --beam_size 5 \
+    --greedy_search_k=5 \
+    --max_tgt_length 128
+```
 
 注：根据论文，在NLU任务时，type_token_id为[0,1]；在NLG任务时，type_token_id为[4,5]
 

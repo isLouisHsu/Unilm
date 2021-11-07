@@ -112,6 +112,8 @@ def main():
                         help="Batch size for decoding.")
     parser.add_argument('--beam_size', type=int, default=1,
                         help="Beam size for searching")
+    parser.add_argument('--greedy_search_k', type=int, default=1,
+                        help="Beam size for searching")
     parser.add_argument('--length_penalty', type=float, default=0,
                         help="Length penalty for beam search")
     parser.add_argument('--forbid_duplicate_ngrams', action='store_true')
@@ -130,6 +132,8 @@ def main():
             "Score trace is only available for beam search with beam size > 1.")
     if args.max_tgt_length >= args.max_seq_length - 2:
         raise ValueError("Maximum tgt length exceeds max seq length - 2.")
+    if args.beam_size > 1 and args.greedy_search_k > 1:
+        logging.warning("`greedy_search_k` will be ignored for beam search")
 
     device = torch.device(
         "cuda" if torch.cuda.is_available() else "cpu")

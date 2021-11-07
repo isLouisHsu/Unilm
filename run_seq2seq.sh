@@ -1,4 +1,4 @@
-python3 -u run_seq2seq.py \
+python3 run_seq2seq.py \
     --model_type unilm \
     --model_name_or_path unilm_base/ \
     --data_dir data/ \
