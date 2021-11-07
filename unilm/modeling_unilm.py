@@ -674,6 +674,7 @@ class UnilmForSeq2SeqDecode(UnilmPreTrainedModel):
             curr_ids = torch.reshape(k_ids, [batch_size * K, 1])
 
             if is_first:
+                ## 每个样本多个不同束集并行计算
                 token_type_ids = first_expand(token_type_ids)   # (batch_size * search_beam_size, total_length)
                 position_ids = first_expand(position_ids)       # (batch_size * search_beam_size, total_length)
                 attention_mask = first_expand(attention_mask)   # (batch_size * search_beam_size, total_length, total_length)
